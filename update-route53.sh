@@ -92,7 +92,7 @@ function update_route53()
     return
   fi
 
-  echo "Updating recordset $DNS_NAME A $MY_IP TTL $DSN_TTL."
+  echo "Updating recordset $DNS_NAME A $MY_IP TTL $DNS_TTL."
 
   CHANGE_BATCH_FILE=$(mktemp)
   trap "rm -rf $CHANGE_BATCH_FILE" EXIT
