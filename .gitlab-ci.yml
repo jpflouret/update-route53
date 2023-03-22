@@ -57,6 +57,7 @@ push_tag:
   variables:
     GIT_STRATEGY: none
   stage: push
+  image: docker:latest
   only:
     - tags
   script:
@@ -68,6 +69,7 @@ hub_push_tag:
   variables:
     GIT_STRATEGY: none
   stage: push
+  image: docker:latest
   only:
     - tags
   script:
