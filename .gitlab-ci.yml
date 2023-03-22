@@ -7,6 +7,7 @@ stages:
 
 before_script:
   - echo -n $CI_REGISTRY_PASSWORD | docker login -u $CI_REGISTRY_USER --password-stdin $CI_REGISTRY
+  - echo -n $DOCKER_HUB_API_KEY | docker login -u $DOCKER_HUB_USER --password-stdin
 
 build:
   stage: build
@@ -47,8 +48,6 @@ hub_push_latest:
     - main
   except:
     - schedules
-  before_script:
-    - echo -n $DOCKER_HUB_API_KEY | docker login -u $DOCKER_HUB_USER --password-stdin
   script:
     - docker pull $CI_REGISTRY_IMAGE:$CI_COMMIT_SHA
     - docker tag $CI_REGISTRY_IMAGE:$CI_COMMIT_SHA $DOCKER_HUB_REPO:latest
@@ -71,8 +70,6 @@ hub_push_tag:
   stage: push
   only:
     - tags
-  before_script:
-    - echo -n $DOCKER_HUB_API_KEY | docker login -u $DOCKER_HUB_USER --password-stdin
   script:
     - docker pull $CI_REGISTRY_IMAGE:$CI_COMMIT_SHA
     - docker tag $CI_REGISTRY_IMAGE:$CI_COMMIT_SHA $DOCKER_HUB_REPO:$CI_COMMIT_REF_NAME
