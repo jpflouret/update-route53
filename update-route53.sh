@@ -120,6 +120,11 @@ EOF
   rm $CHANGE_BATCH_FILE
 
   echo "Recordset $DNS_NAME updated A $MY_IP with change id $CHANGE_ID"
+
+  echo "Waiting 30 seconds before checking the aws change..."
+
+  sleep 30
+
   echo "Waiting for change id $CHANGE_ID to complete..."
 
   $AWS route53 wait resource-record-sets-changed --id "$CHANGE_ID"
