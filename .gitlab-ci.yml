@@ -10,6 +10,7 @@ stages:
   - push
 
 before_script:
+  - sleep 5 # wait for dind certs to be written
   - docker info
   - echo -n $CI_REGISTRY_PASSWORD | docker login -u $CI_REGISTRY_USER --password-stdin $CI_REGISTRY
   - echo -n $DOCKER_HUB_API_KEY | docker login -u $DOCKER_HUB_USER --password-stdin
