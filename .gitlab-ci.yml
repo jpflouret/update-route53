@@ -1,17 +1,24 @@
 variables:
   DOCKER_HUB_REPO: jpflouret/update-route53
+  DOCKER_HOST: tcp://docker:2376
+  DOCKER_TLS_CERTDIR: "/certs"
+  DOCKER_TLS_VERIFY: 1
+  DOCKER_CERT_PATH: "$DOCKER_TLS_CERTDIR/client"
 
 stages:
   - build
   - push
 
 before_script:
+  - docker info
   - echo -n $CI_REGISTRY_PASSWORD | docker login -u $CI_REGISTRY_USER --password-stdin $CI_REGISTRY
   - echo -n $DOCKER_HUB_API_KEY | docker login -u $DOCKER_HUB_USER --password-stdin
 
 build:
   stage: build
   image: docker:latest
+  services:
+    - docker:dind
   script:
     - >
       docker build
@@ -30,6 +37,8 @@ push_latest:
     GIT_STRATEGY: none
   stage: push
   image: docker:latest
+  services:
+    - docker:dind
   only:
     - main
   except:
@@ -44,6 +53,8 @@ hub_push_latest:
     GIT_STRATEGY: none
   stage: push
   image: docker:latest
+  services:
+    - docker:dind
   only:
     - main
   except:
@@ -58,6 +69,8 @@ push_tag:
     GIT_STRATEGY: none
   stage: push
   image: docker:latest
+  services:
+    - docker:dind
   only:
     - tags
   script:
@@ -70,6 +83,8 @@ hub_push_tag:
     GIT_STRATEGY: none
   stage: push
   image: docker:latest
+  services:
+    - docker:dind
   only:
     - tags
   script:
