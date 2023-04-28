@@ -21,25 +21,29 @@ build:
   services:
     - docker:dind
   script: |
-    if [ "$CI_COMMIT_BRANCH" = "main" ]; then
-      if [ "$CI_PIPELINE_SOURCE" != "schedule" ]; then
-        PUSH_TAGS="$PUSH_TAGS --tag $CI_REGISTRY_IMAGE:latest"
-        PUSH_TAGS="$PUSH_TAGS --tag $DOCKER_HUB_REPO:latest"
-        if [ "$CI_COMMIT_TAG" != "" ]; then
-          PUSH_TAGS="$PUSH_TAGS --tag $CI_REGISTRY_IMAGE:$CI_COMMIT_TAG"
-          PUSH_TAGS="$PUSH_TAGS --tag $DOCKER_HUB_REPO:$CI_COMMIT_TAG"
-        fi
-        if [ "$CI_COMMIT_REF_NAME" != "" ]; then
-          PUSH_TAGS="$PUSH_TAGS --tag $CI_REGISTRY_IMAGE:$CI_COMMIT_REF_NAME"
-          PUSH_TAGS="$PUSH_TAGS --tag $DOCKER_HUB_REPO:$CI_COMMIT_REF_NAME"
-        fi
+    if [ "$CI_PIPELINE_SOURCE" != "schedule" ]; then
+      if [ "$CI_COMMIT_TAG" != "" ]; then
+        GIT_PUSH_TAGS="$GIT_PUSH_TAGS --tag $CI_REGISTRY_IMAGE:$CI_COMMIT_TAG"
+        HUB_PUSH_TAGS="$HUB_PUSH_TAGS --tag $DOCKER_HUB_REPO:$CI_COMMIT_TAG"
+      elif [ "$CI_COMMIT_REF_NAME" != "" ]; then
+        GIT_PUSH_TAGS="$GIT_PUSH_TAGS --tag $CI_REGISTRY_IMAGE:$CI_COMMIT_REF_NAME"
+        HUB_PUSH_TAGS="$HUB_PUSH_TAGS --tag $DOCKER_HUB_REPO:$CI_COMMIT_REF_NAME"
       fi
+      if [ "$CI_COMMIT_BRANCH" = "main" ]; then
+        GIT_PUSH_TAGS="$GIT_PUSH_TAGS --tag $CI_REGISTRY_IMAGE:latest"
+        HUB_PUSH_TAGS="$HUB_PUSH_TAGS --tag $DOCKER_HUB_REPO:latest"
+        PUSH_TAGS="$GIT_PUSH_TAGS $HUB_PUSH_TAGS"
+      else
+        PUSH_TAGS="$GIT_PUSH_TAGS"
+      fi
+    fi
+    if [ "$PUSH_TAGS" != "" ]; then
+      PUSH_TAGS="--push $PUSH_TAGS"
     fi
     docker context create build-context
     docker buildx create --name buildx-instance --driver docker-container --use build-context
     docker buildx build \
       --pull \
-      --push \
       --platform linux/arm64/v8,linux/amd64 \
       --label "org.opencontainers.image.title=$CI_PROJECT_TITLE" \
       --label "org.opencontainers.image.created=$CI_JOB_STARTED_AT" \
