@@ -1,4 +1,6 @@
-FROM ubuntu:20.04
+FROM ubuntu:22.04
+
+ARG TARGETARCH
 
 WORKDIR /app
 
@@ -8,7 +10,14 @@ RUN apt-get update && \
         unzip \
         && \
     \
-    curl "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o "awscliv2.zip" && \
+    $(if [ "$TARGETARCH" = "amd64" ]; then \
+        curl -sSL "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o "awscliv2.zip"; \
+    elif [ "$TARGETARCH" = "arm64" ]; then \
+        curl -sSL "https://awscli.amazonaws.com/awscli-exe-linux-aarch64.zip" -o "awscliv2.zip"; \
+    else \
+        echo "Invalid target arch in $TARGETARCH" >&2; \
+        exit 1; \
+    fi) && \
     unzip awscliv2.zip && \
     ./aws/install && \
     rm -rf aws && \
