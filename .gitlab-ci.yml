@@ -37,6 +37,7 @@ build:
     docker buildx build \
       --pull \
       --push \
+      --platform linux/arm/v7,linux/arm64/v8,linux/amd64 \
       --label "org.opencontainers.image.title=$CI_PROJECT_TITLE" \
       --label "org.opencontainers.image.created=$CI_JOB_STARTED_AT" \
       --label "org.opencontainers.image.revision=$CI_COMMIT_SHA" \
