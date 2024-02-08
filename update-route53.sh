@@ -79,7 +79,7 @@ function update_route53()
     return
   fi
 
-  CURRENT_IP=$($AWS route53 list-resource-record-sets --hosted-zone-id $HOSTED_ZONE_ID --query "ResourceRecordSets[?Name == '${DNS_NAME}.'].ResourceRecords[0].Value" --output text)
+  CURRENT_IP=$($AWS route53 list-resource-record-sets --hosted-zone-id $HOSTED_ZONE_ID --query "ResourceRecordSets[?Name == '${DNS_NAME}.' && Type == 'A'].ResourceRecords[0].Value" --output text)
   if ! valid_ip $CURRENT_IP;
   then
     echo "Got invalid address for recordset ${DNS_NAME} for hosted zone ${HOSTED_ZONE_ID}." >&2
