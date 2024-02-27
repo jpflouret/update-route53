@@ -38,6 +38,7 @@ build:
     docker buildx create --name buildx-instance --driver docker-container --use build-context
     docker buildx build \
       --pull \
+      --provenance false \
       --platform linux/arm64/v8,linux/amd64 \
       --label "org.opencontainers.image.title=$CI_PROJECT_TITLE" \
       --label "org.opencontainers.image.created=$CI_JOB_STARTED_AT" \
