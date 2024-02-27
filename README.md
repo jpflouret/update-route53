@@ -14,5 +14,5 @@ docker run -d \
     -e AWS_DEFAULT_REGION=<your aws region> \
     -e HOSTED_ZONE_ID=<your route53 hoseted zone id> \
     -e DNS_NAME=myhost.domain.com \
-    jpflouret/update-route53
+    ghcr.io/jpflouret/update-route53:latest
 ```
