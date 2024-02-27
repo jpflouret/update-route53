@@ -5,7 +5,7 @@ nameOverride: ""
 fullnameOverride: ""
 
 image:
-  repository: ghcr.io/jpflouret/update-route53:latest
+  repository: ghcr.io/jpflouret/update-route53
   pullPolicy: IfNotPresent
   # Overrides the image tag whose default is the chart appVersion.
   tag: ""
