@@ -1,0 +1,97 @@
+# Default values for update-route53.
+
+replicaCount: 1
+nameOverride: ""
+fullnameOverride: ""
+
+image:
+  repository: docker.io/jpflouret/update-route53
+  pullPolicy: IfNotPresent
+  # Overrides the image tag whose default is the chart appVersion.
+  tag: ""
+
+imagePullSecrets: []
+
+# Host name to update
+dnsName: ""
+
+# TTL for the DNS record
+dnsTTL:  "300"
+
+# Hosted zone id
+hostedZoneId: ""
+
+# URL to check the public IP address
+chechIPURL: ""
+
+# Period to check the public IP address
+sleepPeriod: ""
+
+secret:
+  create: false
+  # AWS access key and secret access key
+  accessKeyId: ""
+  secretAccessKey: ""
+  awsRegion: ""
+  # Secret should contain the following keys:
+  # - AWS_ACCESS_KEY_ID
+  # - AWS_SECRET_ACCESS_KEY
+  # - AWS_DEFAULT_REGION
+  existingSecret: "{{ include \"update-route53.fullname\" . }}"
+
+service:
+  create: false
+  type: ClusterIP
+  port: 8080
+  annotations: {}
+    # prometheus.io/scrape: "true"
+    # prometheus.io/path: /metrics
+    # prometheus.io/port: "8080"
+
+serviceAccount:
+  create: false
+  name: ""
+  automount: true
+  annotations: {}
+
+resources: {}
+  # We usually recommend not to specify default resources and to leave this as a conscious
+  # choice for the user. This also increases chances charts run on environments with little
+  # resources, such as Minikube. If you do want to specify resources, uncomment the following
+  # lines, adjust them as necessary, and remove the curly braces after 'resources:'.
+  # limits:
+  #   cpu: 100m
+  #   memory: 128Mi
+  # requests:
+  #   cpu: 100m
+  #   memory: 128Mi
+
+livenessProbe:
+  httpGet:
+    path: /healthz
+    port: metrics
+readinessProbe:
+  httpGet:
+    path: /healthz
+    port: metrics
+
+podAnnotations: {}
+podLabels: {}
+
+podSecurityContext: {}
+  # fsGroup: 2000
+
+securityContext:
+  # capabilities:
+  #   drop:
+  #   - ALL
+  readOnlyRootFilesystem: true
+  runAsNonRoot: true
+  runAsUser: 10001
+  runAsGroup: 10001
+
+nodeSelector: {}
+
+tolerations: []
+
+affinity: {}
