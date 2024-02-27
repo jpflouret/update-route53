@@ -1,6 +1,4 @@
-ARG GOLANG_VERSION
-
-FROM golang:${GOLANG_VERSION}-alpine as builder
+FROM golang:1.22-alpine as builder
 
 RUN apk update \
     && apk upgrade && apk add git
