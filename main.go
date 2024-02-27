@@ -286,13 +286,6 @@ func main() {
 		os.Setenv("AWS_DEFAULT_REGION", region)
 	}
 
-	enc.EncodeKeyval("time", time.Now().UTC().Format(time.RFC3339))
-	enc.EncodeKeyval("level", "debug")
-	enc.EncodeKeyval("accessKeyId", accessKeyId)
-	enc.EncodeKeyval("secretAccessKey", secretAccessKey)
-	enc.EncodeKeyval("region", region)
-	enc.EndRecord()
-
 	// Log startup message
 	enc.EncodeKeyval("time", time.Now().UTC().Format(time.RFC3339))
 	enc.EncodeKeyval("level", "info")
