@@ -1,35 +1,25 @@
-FROM ubuntu:22.04
+ARG GOLANG_VERSION
 
-ARG TARGETARCH
+FROM golang:${GOLANG_VERSION}-alpine as builder
 
-WORKDIR /app
+RUN apk update \
+    && apk upgrade && apk add git
 
-RUN apt-get update && \
-    apt-get install -y \
-        curl \
-        unzip \
-        && \
-    \
-    $(if [ "$TARGETARCH" = "amd64" ]; then \
-        curl -sSL "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o "awscliv2.zip"; \
-    elif [ "$TARGETARCH" = "arm64" ]; then \
-        curl -sSL "https://awscli.amazonaws.com/awscli-exe-linux-aarch64.zip" -o "awscliv2.zip"; \
-    else \
-        echo "Invalid target arch in $TARGETARCH" >&2; \
-        exit 1; \
-    fi) && \
-    unzip awscliv2.zip && \
-    ./aws/install && \
-    rm -rf aws && \
-    rm awscliv2.zip && \
-    \
-    apt-get -y autoremove && \
-    apt-get -y clean && \
-    rm -rf /var/lib/apt/lists/* && \
-    rm -rf /tmp/* && \
-    rm -rf /var/tmp/*
+WORKDIR /go/src/flouret.io/update-route53
 
-COPY update-route53.sh /app
+COPY . .
 
-CMD ["/bin/bash", "-c", "/app/update-route53.sh"]
+RUN go get -v .
+RUN CGO_ENABLED=0 go build -a -installsuffix cgo -ldflags "-s -w" -o update-route53 .
 
+FROM alpine:latest as alpine
+RUN apk update && apk upgrade && apk add --no-cache ca-certificates
+RUN update-ca-certificates
+RUN adduser -D -h / -H -s /sbin/nologin -u 10001 -g "" update-route53
+
+FROM scratch
+COPY --from=alpine /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/
+COPY --from=alpine /etc/passwd /etc/group /etc/
+COPY --from=builder /go/src/flouret.io/update-route53/update-route53 /
+USER update-route53:update-route53
+CMD ["/update-route53"]

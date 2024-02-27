@@ -43,5 +43,6 @@ build:
       --label "org.opencontainers.image.created=$CI_JOB_STARTED_AT" \
       --label "org.opencontainers.image.revision=$CI_COMMIT_SHA" \
       --label "org.opencontainers.image.version=$CI_COMMIT_REF_NAME" \
+      --build-arg GOLANG_VERSION=$GOLANG_VERSION \
       $PUSH_TAGS \
       .
