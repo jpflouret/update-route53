@@ -63,12 +63,15 @@ The secret should contain the following keys:
 
 You can create the secret using `kubectl`:
 ```shell
-kubectl kubectl create secret generic aws-credentials \
-  --namespace <namespace>
+kubectl create secret generic aws-credentials \
+  --namespace <namespace> \
   --from-literal=AWS_ACCESS_KEY_ID=<access key id> \
   --from-literal=AWS_SECRET_ACCESS_KEY=<secret access key> \
   --from-literal=AWS_DEFAULT_REGION=<aws region>
 ```
+> [!TIP]
+> Add a space in front of the above command to prevent bash from
+> storing the command in the history file.
 
 When installing the chart, set `secret.existingSecret` to the name of
 the secret created above (`aws-credentials` in this example):
