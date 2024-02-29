@@ -2,9 +2,9 @@ package main
 
 import (
 	"context"
+	"flag"
 	"fmt"
 	"io"
-	"log"
 	"net"
 	"net/http"
 	"net/url"
@@ -17,9 +17,9 @@ import (
 	"github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/service/route53"
 	"github.com/aws/aws-sdk-go-v2/service/route53/types"
-	"github.com/go-logfmt/logfmt"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
+	"github.com/rs/zerolog"
 )
 
 var (
@@ -29,10 +29,12 @@ var (
 	})
 
 	dnsName      = ""                              // DNS_NAME environment variable
-	dnsTTL       = 300                             // DNS_TTL environment variable
+	dnsTTL       = uint64(300)                     // DNS_TTL environment variable
 	hostedZoneId = ""                              // HOSTED_ZONE_ID environment variable
 	checkIPURL   = "http://checkip.amazonaws.com/" // CHECK_IP environment variable
 	sleepPeriod  = 5 * time.Minute                 // SLEEP_PERIOD environment variable
+
+	logger zerolog.Logger
 )
 
 func init() {
@@ -40,30 +42,20 @@ func init() {
 }
 
 func updateRoute53(svc *route53.Client) {
-	enc := logfmt.NewEncoder(os.Stdout)
+
+	logger := logger // local copy of logger
 
 	// Fetch current IP address
 	resp, err := http.Get(checkIPURL)
 	if err != nil {
-		enc.EncodeKeyval("time", time.Now().UTC().Format(time.RFC3339))
-		enc.EncodeKeyval("level", "error")
-		enc.EncodeKeyval("dnsName", dnsName)
-		enc.EncodeKeyval("hostedZoneId", hostedZoneId)
-		enc.EncodeKeyval("msg", fmt.Sprintf("unable to fetch address, %v", err))
-		enc.EncodeKeyval("checkIPURL", checkIPURL)
-		enc.EndRecord()
+		logger.Err(err).Msg("unable to fetch current address")
 		return
 	}
 	defer resp.Body.Close()
+
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
-		enc.EncodeKeyval("time", time.Now().UTC().Format(time.RFC3339))
-		enc.EncodeKeyval("level", "error")
-		enc.EncodeKeyval("dnsName", dnsName)
-		enc.EncodeKeyval("hostedZoneId", hostedZoneId)
-		enc.EncodeKeyval("msg", fmt.Sprintf("unable to read response body, %v", err))
-		enc.EncodeKeyval("checkIPURL", checkIPURL)
-		enc.EndRecord()
+		logger.Err(err).Msg("unable to read response body")
 		return
 	}
 
@@ -71,38 +63,29 @@ func updateRoute53(svc *route53.Client) {
 	ipstr := strings.TrimSpace(string(body))
 	ip := net.ParseIP(ipstr)
 	if ip == nil {
-		enc.EncodeKeyval("time", time.Now().UTC().Format(time.RFC3339))
-		enc.EncodeKeyval("level", "error")
-		enc.EncodeKeyval("dnsName", dnsName)
-		enc.EncodeKeyval("hostedZoneId", hostedZoneId)
-		enc.EncodeKeyval("msg", fmt.Sprintf("unable to parse address, %v", ipstr))
-		enc.EncodeKeyval("checkIPURL", checkIPURL)
-		enc.EndRecord()
+		logger.Error().
+			Str("address", ipstr).
+			Msg("unable to parse address")
 		return
 	}
+
+	logger = logger.With().Str("currentAddress", ipstr).Logger()
 
 	// Fetch current value of record in AWS Route53
-	currentRecordValue, err := getCurrentRecordValue(svc)
+	currentRecordValue, currentRecordTTL, err := getCurrentRecordValue(svc)
 	if err != nil {
-		enc.EncodeKeyval("time", time.Now().UTC().Format(time.RFC3339))
-		enc.EncodeKeyval("level", "error")
-		enc.EncodeKeyval("dnsName", dnsName)
-		enc.EncodeKeyval("hostedZoneId", hostedZoneId)
-		enc.EncodeKeyval("msg", fmt.Sprintf("unable to get current record value, %v", err))
-		enc.EndRecord()
+		logger.Err(err).Msg("unable to get current record value")
 		return
 	}
 
+	logger = logger.With().
+		Str("currentRecordValue", currentRecordValue).
+		Uint64("currentRecordTTL", currentRecordTTL).Logger()
+
 	// Check if the current IP is different from the record value
-	if currentRecordValue == ipstr {
-		enc.EncodeKeyval("time", time.Now().UTC().Format(time.RFC3339))
-		enc.EncodeKeyval("level", "info")
-		enc.EncodeKeyval("dnsName", dnsName)
-		enc.EncodeKeyval("hostedZoneId", hostedZoneId)
-		enc.EncodeKeyval("msg", "address has not changed")
-		enc.EncodeKeyval("currentAddress", ipstr)
-		enc.EncodeKeyval("currentRecordValue", currentRecordValue)
-		enc.EndRecord()
+	if currentRecordValue == ipstr &&
+		currentRecordTTL == dnsTTL {
+		logger.Info().Msg("address has not changed")
 		return
 	}
 
@@ -125,25 +108,12 @@ func updateRoute53(svc *route53.Client) {
 	}
 	changeOutput, err := svc.ChangeResourceRecordSets(context.TODO(), input)
 	if err != nil {
-		enc.EncodeKeyval("time", time.Now().UTC().Format(time.RFC3339))
-		enc.EncodeKeyval("level", "error")
-		enc.EncodeKeyval("dnsName", dnsName)
-		enc.EncodeKeyval("hostedZoneId", hostedZoneId)
-		enc.EncodeKeyval("msg", fmt.Sprintf("unable to change record sets, %v", err))
-		enc.EndRecord()
+		logger.Err(err).Msg("unable to change record sets")
 		return
 	}
 
-	enc.EncodeKeyval("time", time.Now().UTC().Format(time.RFC3339))
-	enc.EncodeKeyval("level", "info")
-	enc.EncodeKeyval("dnsName", dnsName)
-	enc.EncodeKeyval("hostedZoneId", hostedZoneId)
-	enc.EncodeKeyval("msg", "change submitted")
-	enc.EncodeKeyval("currentAddress", ipstr)
-	enc.EncodeKeyval("currentRecordValue", currentRecordValue)
-	enc.EncodeKeyval("change", *changeOutput.ChangeInfo.Id)
-	enc.EncodeKeyval("dnsTTL", dnsTTL)
-	enc.EndRecord()
+	logger = logger.With().Str("change", *changeOutput.ChangeInfo.Id).Logger()
+	logger.Info().Msg("change submitted")
 
 	// Wait until the changes are INSYNC
 	for {
@@ -151,41 +121,23 @@ func updateRoute53(svc *route53.Client) {
 			Id: aws.String(*changeOutput.ChangeInfo.Id),
 		})
 		if err != nil {
-			enc.EncodeKeyval("time", time.Now().UTC().Format(time.RFC3339))
-			enc.EncodeKeyval("level", "error")
-			enc.EncodeKeyval("dnsName", dnsName)
-			enc.EncodeKeyval("hostedZoneId", hostedZoneId)
-			enc.EncodeKeyval("msg", fmt.Sprintf("unable to get change status, %v", err))
-			enc.EncodeKeyval("currentAddress", ipstr)
-			enc.EncodeKeyval("currentRecordValue", currentRecordValue)
-			enc.EncodeKeyval("change", *changeOutput.ChangeInfo.Id)
-			enc.EndRecord()
+			logger.Err(err).Msg("unable to get change status")
 			break
 		}
 
 		if resp.ChangeInfo.Status == types.ChangeStatusInsync {
 
 			// Fetch current value of record again to confirm the change
-			currentRecordValue, err = getCurrentRecordValue(svc)
+			updatedRecordValue, updatedRecordTTL, err := getCurrentRecordValue(svc)
 			if err != nil {
-				enc.EncodeKeyval("time", time.Now().UTC().Format(time.RFC3339))
-				enc.EncodeKeyval("level", "error")
-				enc.EncodeKeyval("dnsName", dnsName)
-				enc.EncodeKeyval("hostedZoneId", hostedZoneId)
-				enc.EncodeKeyval("msg", fmt.Sprintf("unable to get current record value, %v", err))
-				enc.EndRecord()
+				logger.Err(err).Msg("unable to get updated record value")
 				return
 			}
 
-			enc.EncodeKeyval("time", time.Now().UTC().Format(time.RFC3339))
-			enc.EncodeKeyval("level", "info")
-			enc.EncodeKeyval("dnsName", dnsName)
-			enc.EncodeKeyval("hostedZoneId", hostedZoneId)
-			enc.EncodeKeyval("msg", "change propagated")
-			enc.EncodeKeyval("currentAddress", ipstr)
-			enc.EncodeKeyval("currentRecordValue", currentRecordValue)
-			enc.EncodeKeyval("change", *changeOutput.ChangeInfo.Id)
-			enc.EndRecord()
+			logger.Info().
+				Str("updatedRecordValue", updatedRecordValue).
+				Uint64("updatedRecordTTL", updatedRecordTTL).
+				Msg("change propagated")
 			break
 		}
 
@@ -194,67 +146,66 @@ func updateRoute53(svc *route53.Client) {
 	}
 }
 
-func getCurrentRecordValue(svc *route53.Client) (string, error) {
+func getCurrentRecordValue(svc *route53.Client) (string, uint64, error) {
 	listInput := &route53.ListResourceRecordSetsInput{
 		HostedZoneId: aws.String("/hostedzone/" + hostedZoneId),
 	}
 	listOutput, err := svc.ListResourceRecordSets(context.TODO(), listInput)
 	if err != nil {
-		return "", err
+		return "", 0, err
 	}
 	var currentRecordValue string
+	var currentRecordTTL uint64
 	for _, recordSet := range listOutput.ResourceRecordSets {
 		if *recordSet.Name == (dnsName+".") && recordSet.Type == types.RRTypeA {
 			currentRecordValue = *recordSet.ResourceRecords[0].Value
+			currentRecordTTL = uint64(*recordSet.TTL)
 			break
 		}
 	}
-	return currentRecordValue, nil
+	return currentRecordValue, currentRecordTTL, nil
 }
 
 func main() {
 	var err error
-	enc := logfmt.NewEncoder(os.Stdout)
+
+	console := flag.Bool("console", false, "enable console logging")
+	port := flag.Uint("port", 8080, "port for health check/metrics server")
+	flag.Parse()
+
+	if *console {
+		logger = zerolog.New(zerolog.ConsoleWriter{Out: os.Stdout}).With().Timestamp().Logger()
+	} else {
+		logger = zerolog.New(os.Stdout).With().Timestamp().Logger()
+	}
+
+	if *port < 1 || *port > 65535 {
+		logger.Fatal().Msg("invalid port number")
+	}
 
 	dnsName = os.Getenv("DNS_NAME")
 	if dnsName == "" {
-		enc.EncodeKeyval("time", time.Now().UTC().Format(time.RFC3339))
-		enc.EncodeKeyval("level", "error")
-		enc.EncodeKeyval("msg", "missing DNS_NAME environment variable")
-		enc.EndRecord()
-		os.Exit(1)
+		logger.Fatal().Msg("missing DNS_NAME environment variable")
 	}
 
 	dnsTTLStr := os.Getenv("DNS_TTL")
 	if dnsTTLStr != "" {
-		dnsTTL, err = strconv.Atoi(dnsTTLStr)
+		dnsTTL, err = strconv.ParseUint(dnsTTLStr, 10, 32)
 		if err != nil {
-			enc.EncodeKeyval("time", time.Now().UTC().Format(time.RFC3339))
-			enc.EncodeKeyval("level", "error")
-			enc.EncodeKeyval("msg", "invalid DNS_TTL environment variable")
-			enc.EndRecord()
-			os.Exit(1)
+			logger.Fatal().Msg("invalid DNS_TTL environment variable")
 		}
 	}
 
 	hostedZoneId = os.Getenv("HOSTED_ZONE_ID")
 	if hostedZoneId == "" {
-		enc.EncodeKeyval("time", time.Now().UTC().Format(time.RFC3339))
-		enc.EncodeKeyval("level", "error")
-		enc.EncodeKeyval("msg", "missing HOSTED_ZONE_ID environment variable")
-		enc.EndRecord()
-		os.Exit(1)
+		logger.Fatal().Msg("missing HOSTED_ZONE_ID environment variable")
 	}
 
 	tmpCheckIPURL := os.Getenv("CHECK_IP")
 	if tmpCheckIPURL != "" {
 		_, err := url.Parse(tmpCheckIPURL)
 		if err != nil {
-			enc.EncodeKeyval("time", time.Now().UTC().Format(time.RFC3339))
-			enc.EncodeKeyval("level", "error")
-			enc.EncodeKeyval("msg", "invalid CHECK_IP environment variable")
-			enc.EndRecord()
-			os.Exit(1)
+			logger.Fatal().Msg("invalid CHECK_IP environment variable")
 		}
 		checkIPURL = tmpCheckIPURL
 	}
@@ -263,44 +214,26 @@ func main() {
 	if sleepPeriodStr != "" {
 		sleepPeriod, err = time.ParseDuration(sleepPeriodStr)
 		if err != nil {
-			enc.EncodeKeyval("time", time.Now().UTC().Format(time.RFC3339))
-			enc.EncodeKeyval("level", "error")
-			enc.EncodeKeyval("msg", "invalid SLEEP_PERIOD environment variable")
-			enc.EndRecord()
-			os.Exit(1)
+			logger.Fatal().Msg("invalid SLEEP_PERIOD environment variable")
 		}
 	}
 
-	accessKeyId := os.Getenv("AWS_ACCESS_KEY_ID")
-	secretAccessKey := os.Getenv("AWS_SECRET_ACCESS_KEY")
-	if accessKeyId == "" || secretAccessKey == "" {
-		enc.EncodeKeyval("time", time.Now().UTC().Format(time.RFC3339))
-		enc.EncodeKeyval("level", "error")
-		enc.EncodeKeyval("msg", "missing AWS_ACCESS_KEY_ID or AWS_SECRET_ACCESS_KEY environment variable")
-		enc.EndRecord()
-		os.Exit(1)
-	}
-	region := os.Getenv("AWS_DEFAULT_REGION")
-	if region == "" {
-		region = "us-west-2"
-		os.Setenv("AWS_DEFAULT_REGION", region)
-	}
+	logger = logger.With().
+		Str("dnsName", dnsName).
+		Str("hostedZoneId", hostedZoneId).
+		Logger()
 
 	// Log startup message
-	enc.EncodeKeyval("time", time.Now().UTC().Format(time.RFC3339))
-	enc.EncodeKeyval("level", "info")
-	enc.EncodeKeyval("dnsName", dnsName)
-	enc.EncodeKeyval("hostedZoneId", hostedZoneId)
-	enc.EncodeKeyval("msg", "starting route53-updater...")
-	enc.EncodeKeyval("dnsTTL", dnsTTL)
-	enc.EncodeKeyval("checkIPURL", checkIPURL)
-	enc.EncodeKeyval("sleepPeriod", sleepPeriod)
-	enc.EndRecord()
+	logger.Info().
+		Str("checkIPURL", checkIPURL).
+		Str("sleepPeriod", sleepPeriod.String()).
+		Uint64("dnsTTL", dnsTTL).
+		Msg("starting route53-updater...")
 
-	// Load AWS configuration from environment variables
+	// Load AWS configuration
 	cfg, err := config.LoadDefaultConfig(context.TODO())
 	if err != nil {
-		log.Fatalf("unable to load aws config from envirionment, %v", err)
+		logger.Err(err).Msg("unable to load aws configuration")
 	}
 
 	// Create Route53 client
@@ -317,7 +250,7 @@ func main() {
 		// Add Prometheus metrics endpoint
 		http.Handle("/metrics", promhttp.Handler())
 
-		http.ListenAndServe(":8080", nil)
+		http.ListenAndServe(fmt.Sprintf(":%d", *port), nil)
 	}()
 
 	// Start the main loop
