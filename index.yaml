@@ -3,6 +3,19 @@ entries:
   update-route53:
   - apiVersion: v2
     appVersion: 1.0.7
+    created: "2024-03-30T22:30:20.993360445Z"
+    description: A Helm chart for installing update-route53 in Kubernetes
+    digest: ca193d87170a1e5e629dc666f715e457f74f71731c72aa047b89adaa478f502d
+    maintainers:
+    - email: jpfluret@gmail.com
+      name: JP Flouret
+    name: update-route53
+    type: application
+    urls:
+    - https://github.com/jpflouret/update-route53/releases/download/update-route53-0.1.4/update-route53-0.1.4.tgz
+    version: 0.1.4
+  - apiVersion: v2
+    appVersion: 1.0.7
     created: "2024-02-29T08:21:29.028657595Z"
     description: A Helm chart for installing update-route53 in Kubernetes
     digest: f798f97db61ca3220b28faadd9701c2565c706144e3af7b93f5582f8646299eb
@@ -27,4 +40,4 @@ entries:
     urls:
     - https://github.com/jpflouret/update-route53/releases/download/update-route53-0.1.2/update-route53-0.1.2.tgz
     version: 0.1.2
-generated: "2024-02-29T08:21:29.028688943Z"
+generated: "2024-03-30T22:30:20.99337378Z"
