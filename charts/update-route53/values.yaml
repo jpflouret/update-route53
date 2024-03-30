@@ -3,6 +3,7 @@
 replicaCount: 1
 nameOverride: ""
 fullnameOverride: ""
+hostNetwork: false
 
 image:
   repository: ghcr.io/jpflouret/update-route53
@@ -95,3 +96,11 @@ nodeSelector: {}
 tolerations: []
 
 affinity: {}
+
+extraArgs: {}
+extraEnv: []
+extraEnvFrom: []
+extraContainers: []
+extraVolumeMounts: []
+extraVolumes: []
+extraInitContainers: []
