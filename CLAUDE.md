@@ -48,7 +48,7 @@ All application logic lives in `main.go` (single file, ~270 lines):
 
 The Helm chart is at `charts/update-route53/`. Key templating notes:
 
-- `values.yaml` has a typo: `chechIPURL` (not `checkIPURL`) — preserve this spelling when editing templates to avoid breaking existing deployments.
+- `checkIPURL` is the canonical values key for the check-IP URL. The old misspelling `chechIPURL` is deprecated but still supported as a fallback (see `configmap.yaml` and `NOTES.txt` deprecation warning). Remove `chechIPURL` in a future major release.
 - AWS credentials can be supplied either through an existing secret (`secret.existingSecret`) or by letting the chart create one (`secret.create: true`). Alternatively, a Kubernetes service account with IRSA/Pod Identity can be used.
 - Chart version and app version are in `Chart.yaml` and must be bumped manually on changes.
 - The Helm release CI workflow (`helm-release.yml`) uses `chart-releaser` and publishes to `https://jpflouret.github.io/update-route53/`.
