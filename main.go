@@ -28,17 +28,25 @@ var (
 		Help: "Duration for updating Route53",
 	})
 
+	updatesTotal = prometheus.NewCounter(prometheus.CounterOpts{
+		Name: "update_route53_updates_total",
+		Help: "Total number of Route53 record updates performed",
+	})
+
 	dnsName      = ""                              // DNS_NAME environment variable
 	dnsTTL       = uint64(300)                     // DNS_TTL environment variable
 	hostedZoneId = ""                              // HOSTED_ZONE_ID environment variable
 	checkIPURL   = "http://checkip.amazonaws.com/" // CHECK_IP environment variable
 	sleepPeriod  = 5 * time.Minute                 // SLEEP_PERIOD environment variable
 
+	httpClient = &http.Client{Timeout: 10 * time.Second}
+
 	logger zerolog.Logger
 )
 
 func init() {
 	prometheus.MustRegister(updateDuration)
+	prometheus.MustRegister(updatesTotal)
 }
 
 func updateRoute53(svc *route53.Client) {
@@ -46,7 +54,7 @@ func updateRoute53(svc *route53.Client) {
 	logger := logger // local copy of logger
 
 	// Fetch current IP address
-	resp, err := http.Get(checkIPURL)
+	resp, err := httpClient.Get(checkIPURL)
 	if err != nil {
 		logger.Err(err).Msg("unable to fetch current address")
 		return
@@ -112,11 +120,18 @@ func updateRoute53(svc *route53.Client) {
 		return
 	}
 
+	updatesTotal.Inc()
 	logger = logger.With().Str("change", *changeOutput.ChangeInfo.Id).Logger()
 	logger.Info().Msg("change submitted")
 
-	// Wait until the changes are INSYNC
+	// Wait until the changes are INSYNC (up to 5 minutes)
+	deadline := time.Now().Add(5 * time.Minute)
 	for {
+		if time.Now().After(deadline) {
+			logger.Error().Msg("timed out waiting for change to propagate")
+			break
+		}
+
 		resp, err := svc.GetChange(context.TODO(), &route53.GetChangeInput{
 			Id: aws.String(*changeOutput.ChangeInfo.Id),
 		})
@@ -147,23 +162,27 @@ func updateRoute53(svc *route53.Client) {
 }
 
 func getCurrentRecordValue(svc *route53.Client) (string, uint64, error) {
-	listInput := &route53.ListResourceRecordSetsInput{
+	input := &route53.ListResourceRecordSetsInput{
 		HostedZoneId: aws.String("/hostedzone/" + hostedZoneId),
 	}
-	listOutput, err := svc.ListResourceRecordSets(context.TODO(), listInput)
-	if err != nil {
-		return "", 0, err
-	}
-	var currentRecordValue string
-	var currentRecordTTL uint64
-	for _, recordSet := range listOutput.ResourceRecordSets {
-		if *recordSet.Name == (dnsName+".") && recordSet.Type == types.RRTypeA {
-			currentRecordValue = *recordSet.ResourceRecords[0].Value
-			currentRecordTTL = uint64(*recordSet.TTL)
+	for {
+		output, err := svc.ListResourceRecordSets(context.TODO(), input)
+		if err != nil {
+			return "", 0, err
+		}
+		for _, recordSet := range output.ResourceRecordSets {
+			if *recordSet.Name == (dnsName+".") && recordSet.Type == types.RRTypeA {
+				return *recordSet.ResourceRecords[0].Value, uint64(*recordSet.TTL), nil
+			}
+		}
+		if !output.IsTruncated {
 			break
 		}
+		input.StartRecordName = output.NextRecordName
+		input.StartRecordType = output.NextRecordType
+		input.StartRecordIdentifier = output.NextRecordIdentifier
 	}
-	return currentRecordValue, currentRecordTTL, nil
+	return "", 0, nil
 }
 
 func main() {
@@ -233,7 +252,7 @@ func main() {
 	// Load AWS configuration
 	cfg, err := config.LoadDefaultConfig(context.TODO())
 	if err != nil {
-		logger.Err(err).Msg("unable to load aws configuration")
+		logger.Fatal().Err(err).Msg("unable to load aws configuration")
 	}
 
 	// Create Route53 client
@@ -250,7 +269,9 @@ func main() {
 		// Add Prometheus metrics endpoint
 		http.Handle("/metrics", promhttp.Handler())
 
-		http.ListenAndServe(fmt.Sprintf(":%d", *port), nil)
+		if err := http.ListenAndServe(fmt.Sprintf(":%d", *port), nil); err != nil {
+			logger.Fatal().Err(err).Msg("server failed")
+		}
 	}()
 
 	// Start the main loop
