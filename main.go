@@ -9,8 +9,10 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"os/signal"
 	"strconv"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
@@ -49,12 +51,17 @@ func init() {
 	prometheus.MustRegister(updatesTotal)
 }
 
-func updateRoute53(svc *route53.Client) {
+func updateRoute53(ctx context.Context, svc *route53.Client) {
 
 	logger := logger // local copy of logger
 
 	// Fetch current IP address
-	resp, err := httpClient.Get(checkIPURL)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, checkIPURL, nil)
+	if err != nil {
+		logger.Err(err).Msg("unable to create request")
+		return
+	}
+	resp, err := httpClient.Do(req)
 	if err != nil {
 		logger.Err(err).Msg("unable to fetch current address")
 		return
@@ -80,7 +87,7 @@ func updateRoute53(svc *route53.Client) {
 	logger = logger.With().Str("currentAddress", ipstr).Logger()
 
 	// Fetch current value of record in AWS Route53
-	currentRecordValue, currentRecordTTL, err := getCurrentRecordValue(svc)
+	currentRecordValue, currentRecordTTL, err := getCurrentRecordValue(ctx, svc)
 	if err != nil {
 		logger.Err(err).Msg("unable to get current record value")
 		return
@@ -114,7 +121,7 @@ func updateRoute53(svc *route53.Client) {
 		},
 		HostedZoneId: aws.String("/hostedzone/" + hostedZoneId),
 	}
-	changeOutput, err := svc.ChangeResourceRecordSets(context.TODO(), input)
+	changeOutput, err := svc.ChangeResourceRecordSets(ctx, input)
 	if err != nil {
 		logger.Err(err).Msg("unable to change record sets")
 		return
@@ -125,48 +132,38 @@ func updateRoute53(svc *route53.Client) {
 	logger.Info().Msg("change submitted")
 
 	// Wait until the changes are INSYNC (up to 5 minutes)
-	deadline := time.Now().Add(5 * time.Minute)
-	for {
-		if time.Now().After(deadline) {
-			logger.Error().Msg("timed out waiting for change to propagate")
-			break
-		}
-
-		resp, err := svc.GetChange(context.TODO(), &route53.GetChangeInput{
-			Id: aws.String(*changeOutput.ChangeInfo.Id),
-		})
-		if err != nil {
-			logger.Err(err).Msg("unable to get change status")
-			break
-		}
-
-		if resp.ChangeInfo.Status == types.ChangeStatusInsync {
-
-			// Fetch current value of record again to confirm the change
-			updatedRecordValue, updatedRecordTTL, err := getCurrentRecordValue(svc)
-			if err != nil {
-				logger.Err(err).Msg("unable to get updated record value")
-				return
-			}
-
-			logger.Info().
-				Str("updatedRecordValue", updatedRecordValue).
-				Uint64("updatedRecordTTL", updatedRecordTTL).
-				Msg("change propagated")
-			break
-		}
-
-		// Wait 10 seconds before checking again
-		time.Sleep(10 * time.Second)
+	waiter := route53.NewResourceRecordSetsChangedWaiter(svc)
+	waitInput := &route53.GetChangeInput{
+		Id: changeOutput.ChangeInfo.Id,
 	}
+	if err := waiter.Wait(ctx, waitInput, 5*time.Minute); err != nil {
+		if ctx.Err() != nil {
+			logger.Warn().Msg("shutting down, stopping INSYNC poll")
+		} else {
+			logger.Err(err).Msg("failed waiting for change to propagate")
+		}
+		return
+	}
+
+	// Fetch current value of record to confirm the change
+	updatedRecordValue, updatedRecordTTL, err := getCurrentRecordValue(ctx, svc)
+	if err != nil {
+		logger.Err(err).Msg("unable to get updated record value")
+		return
+	}
+
+	logger.Info().
+		Str("updatedRecordValue", updatedRecordValue).
+		Uint64("updatedRecordTTL", updatedRecordTTL).
+		Msg("change propagated")
 }
 
-func getCurrentRecordValue(svc *route53.Client) (string, uint64, error) {
+func getCurrentRecordValue(ctx context.Context, svc *route53.Client) (string, uint64, error) {
 	input := &route53.ListResourceRecordSetsInput{
 		HostedZoneId: aws.String("/hostedzone/" + hostedZoneId),
 	}
 	for {
-		output, err := svc.ListResourceRecordSets(context.TODO(), input)
+		output, err := svc.ListResourceRecordSets(ctx, input)
 		if err != nil {
 			return "", 0, err
 		}
@@ -249,8 +246,15 @@ func main() {
 		Uint64("dnsTTL", dnsTTL).
 		Msg("starting route53-updater...")
 
+	// Cancel context on SIGINT/SIGTERM
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+
 	// Load AWS configuration
-	cfg, err := config.LoadDefaultConfig(context.TODO())
+	cfgCtx, cfgCancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cfgCancel()
+
+	cfg, err := config.LoadDefaultConfig(cfgCtx)
 	if err != nil {
 		logger.Fatal().Err(err).Msg("unable to load aws configuration")
 	}
@@ -259,33 +263,56 @@ func main() {
 	svc := route53.NewFromConfig(cfg)
 
 	// Start health check server
+	mux := http.NewServeMux()
+	mux.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		w.Header().Set("Content-Type", "text/plain")
+		fmt.Fprint(w, "200 OK")
+	})
+	mux.Handle("/metrics", promhttp.Handler())
+
+	server := &http.Server{
+		Addr:    fmt.Sprintf(":%d", *port),
+		Handler: mux,
+	}
+
 	go func() {
-		http.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) {
-			w.WriteHeader(http.StatusOK)
-			w.Header().Set("Content-Type", "text/plain")
-			fmt.Fprint(w, "200 OK")
-		})
-
-		// Add Prometheus metrics endpoint
-		http.Handle("/metrics", promhttp.Handler())
-
-		if err := http.ListenAndServe(fmt.Sprintf(":%d", *port), nil); err != nil {
+		if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 			logger.Fatal().Err(err).Msg("server failed")
 		}
 	}()
 
+	go func() {
+		<-ctx.Done()
+		shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer shutdownCancel()
+		if err := server.Shutdown(shutdownCtx); err != nil {
+			logger.Err(err).Msg("server shutdown error")
+		}
+	}()
+
 	// Start the main loop
+	sleepTimer := time.NewTimer(0)
+	defer sleepTimer.Stop()
+
 	for {
+		select {
+		case <-ctx.Done():
+			logger.Info().Msg("shutting down")
+			return
+		case <-sleepTimer.C:
+		}
+
 		// Start the duration timer
 		start := time.Now()
 
 		// Update Route53
-		updateRoute53(svc)
+		updateRoute53(ctx, svc)
 
 		// Record the duration
 		updateDuration.Add(float64(time.Since(start).Seconds()))
 
 		// Wait before checking again
-		time.Sleep(sleepPeriod)
+		sleepTimer.Reset(sleepPeriod)
 	}
 }
