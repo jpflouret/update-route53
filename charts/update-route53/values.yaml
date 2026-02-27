@@ -23,6 +23,8 @@ dnsTTL:  "300"
 hostedZoneId: ""
 
 # URL to check the public IP address
+checkIPURL: ""
+# DEPRECATED: use checkIPURL instead
 chechIPURL: ""
 
 # Period to check the public IP address

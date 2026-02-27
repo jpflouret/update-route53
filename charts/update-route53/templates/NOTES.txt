@@ -3,3 +3,8 @@ update-route53 {{ .Chart.AppVersion }} has been deployed successfully!
 Watch the pod logs by running these commands:
   export POD_NAME=$(kubectl get pods --namespace {{ .Release.Namespace }} -l "app.kubernetes.io/name={{ include "update-route53.name" . }},app.kubernetes.io/instance={{ .Release.Name }}" -o jsonpath="{.items[0].metadata.name}")
   kubectl --namespace {{ .Release.Namespace }} logs $POD_NAME --follow
+{{- if .Values.chechIPURL }}
+
+WARNING: 'chechIPURL' is deprecated and will be removed in a future release. Use 'checkIPURL' instead.
+
+{{- end }}

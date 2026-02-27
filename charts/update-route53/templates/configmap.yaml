@@ -11,8 +11,9 @@ data:
   DNS_NAME: {{ .Values.dnsName | quote }}
   DNS_TTL: {{ .Values.dnsTTL | quote }}
   HOSTED_ZONE_ID: {{ .Values.hostedZoneId | quote }}
-{{- if .Values.chechIPURL }}
-  CHECK_IP: {{ .Values.chechIPURL | quote }}
+{{- $checkIP := .Values.checkIPURL | default .Values.chechIPURL }}
+{{- if $checkIP }}
+  CHECK_IP: {{ $checkIP | quote }}
 {{- end }}
 {{- if .Values.sleepPeriod }}
   SLEEP_PERIOD: {{ .Values.sleepPeriod | quote }}
