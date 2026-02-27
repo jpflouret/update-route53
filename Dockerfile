@@ -1,16 +1,17 @@
-FROM golang:1.22-alpine as builder
+FROM golang:1.22-alpine AS builder
 
 RUN apk update \
     && apk upgrade && apk add git
 
 WORKDIR /go/src/flouret.io/update-route53
 
-COPY . .
+COPY go.mod go.sum ./
+RUN go mod download
 
-RUN go get -v .
+COPY . .
 RUN CGO_ENABLED=0 go build -a -installsuffix cgo -ldflags "-s -w" -o update-route53 .
 
-FROM alpine:latest as alpine
+FROM alpine:3.23.3 AS alpine
 RUN apk update && apk upgrade && apk add --no-cache ca-certificates
 RUN update-ca-certificates
 RUN adduser -D -h / -H -s /sbin/nologin -u 10001 -g "" update-route53
