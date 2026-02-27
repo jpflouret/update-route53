@@ -1,7 +1,7 @@
 # Update AWS Route 53 Docker Container
 
 This docker container periodically updates a route53 A record with an external
-IP address. This is usefull if you have a dynamic IP address and want to update
+IP address. This is useful if you have a dynamic IP address and want to update
 the current IP in an AWS route 53 record.
 
 ## Usage
@@ -14,7 +14,7 @@ docker run -d \
     -e AWS_ACCESS_KEY_ID=<your access key id> \
     -e AWS_SECRET_ACCESS_KEY=<your secret access key> \
     -e AWS_DEFAULT_REGION=<your aws region> \
-    -e HOSTED_ZONE_ID=<your route53 hoseted zone id> \
+    -e HOSTED_ZONE_ID=<your route53 hosted zone id> \
     -e DNS_NAME=myhost.domain.com \
     ghcr.io/jpflouret/update-route53:latest
 ```
@@ -38,7 +38,7 @@ Edit the `my-values.yaml` file and set the values as required:
 | `dnsName`      | Yes       | Host name to update                                                            | `""`                                                       |
 | `hostedZoneId` | Yes       | Hosted zone id to update                                                       | `""`                                                       |
 | `dnsTTL`       | No        | TTL for the DNS record                                                         | `300`<br>(Default in executable)                           |
-| `chechIPURL`   | No        | URL to check the public IP address                                             | `http://checkip.amazonaws.com/`<br>(Default in executable) |
+| `checkIPURL`   | No        | URL to check the public IP address                                             | `http://checkip.amazonaws.com/`<br>(Default in executable) |
 | `sleepPeriod`  | No        | Sleep period between IP address checks                                         | `5m`                                                       |
 | `tolerations`  | No        | List of kubernetes node taints that are tolerated by the `update-route53` pods | Empty                                                      |
 | `nodeSelector` | No        | List of labels used to select which nodes can run `update-route53` pods        | Empty                                                      |
@@ -101,9 +101,9 @@ endpoint automatically using service annotations.
 Metrics configuration values:
 | Key                   | Required? | Description                                | Default     |
 | --------------------- | --------- | ------------------------------------------ | ----------- |
-| `service.create`      | No        | Crete a service for the metrics endpoint.  | `false`     |
-| `service.type`        | No        | Type of service metrics enpoint.           | `ClusterIP` |
-| `service.annotations` | No        | Annotations to add to the metrics endpont. | Empty       |
+| `service.create`      | No        | Create a service for the metrics endpoint. | `false`     |
+| `service.type`        | No        | Type of service metrics endpoint.          | `ClusterIP` |
+| `service.annotations` | No        | Annotations to add to the metrics endpoint.| Empty       |
 
 You can configure prometheus to scrape the service endpoint automatically by
 adding the following annotations to the service (in `my-values.yaml`):
