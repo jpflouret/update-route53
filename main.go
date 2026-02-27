@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -16,7 +17,7 @@ import (
 	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
-	"github.com/aws/aws-sdk-go-v2/config"
+	awsconfig "github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/service/route53"
 	"github.com/aws/aws-sdk-go-v2/service/route53/types"
 	"github.com/prometheus/client_golang/prometheus"
@@ -34,16 +35,6 @@ var (
 		Name: "update_route53_updates_total",
 		Help: "Total number of Route53 record updates performed",
 	})
-
-	dnsName      = ""                              // DNS_NAME environment variable
-	dnsTTL       = uint64(300)                     // DNS_TTL environment variable
-	hostedZoneId = ""                              // HOSTED_ZONE_ID environment variable
-	checkIPURL   = "http://checkip.amazonaws.com/" // CHECK_IP environment variable
-	sleepPeriod  = 5 * time.Minute                 // SLEEP_PERIOD environment variable
-
-	httpClient = &http.Client{Timeout: 10 * time.Second}
-
-	logger zerolog.Logger
 )
 
 func init() {
@@ -51,125 +42,101 @@ func init() {
 	prometheus.MustRegister(updatesTotal)
 }
 
-func updateRoute53(ctx context.Context, svc *route53.Client) {
-
-	logger := logger // local copy of logger
-
-	// Fetch current IP address
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, checkIPURL, nil)
-	if err != nil {
-		logger.Err(err).Msg("unable to create request")
-		return
-	}
-	resp, err := httpClient.Do(req)
-	if err != nil {
-		logger.Err(err).Msg("unable to fetch current address")
-		return
-	}
-	defer resp.Body.Close()
-
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		logger.Err(err).Msg("unable to read response body")
-		return
-	}
-
-	// Validate IP address
-	ipstr := strings.TrimSpace(string(body))
-	ip := net.ParseIP(ipstr)
-	if ip == nil {
-		logger.Error().
-			Str("address", ipstr).
-			Msg("unable to parse address")
-		return
-	}
-
-	logger = logger.With().Str("currentAddress", ipstr).Logger()
-
-	// Fetch current value of record in AWS Route53
-	currentRecordValue, currentRecordTTL, err := getCurrentRecordValue(ctx, svc)
-	if err != nil {
-		logger.Err(err).Msg("unable to get current record value")
-		return
-	}
-
-	logger = logger.With().
-		Str("currentRecordValue", currentRecordValue).
-		Uint64("currentRecordTTL", currentRecordTTL).Logger()
-
-	// Check if the current IP is different from the record value
-	if currentRecordValue == ipstr &&
-		currentRecordTTL == dnsTTL {
-		logger.Info().Msg("address has not changed")
-		return
-	}
-
-	// Update the record in AWS Route53
-	input := &route53.ChangeResourceRecordSetsInput{
-		ChangeBatch: &types.ChangeBatch{
-			Changes: []types.Change{
-				{
-					Action: types.ChangeActionUpsert,
-					ResourceRecordSet: &types.ResourceRecordSet{
-						Name:            aws.String(dnsName),
-						Type:            types.RRTypeA,
-						TTL:             aws.Int64(int64(dnsTTL)),
-						ResourceRecords: []types.ResourceRecord{{Value: aws.String(ipstr)}},
-					},
-				},
-			},
-		},
-		HostedZoneId: aws.String("/hostedzone/" + hostedZoneId),
-	}
-	changeOutput, err := svc.ChangeResourceRecordSets(ctx, input)
-	if err != nil {
-		logger.Err(err).Msg("unable to change record sets")
-		return
-	}
-
-	updatesTotal.Inc()
-	logger = logger.With().Str("change", *changeOutput.ChangeInfo.Id).Logger()
-	logger.Info().Msg("change submitted")
-
-	// Wait until the changes are INSYNC (up to 5 minutes)
-	waiter := route53.NewResourceRecordSetsChangedWaiter(svc)
-	waitInput := &route53.GetChangeInput{
-		Id: changeOutput.ChangeInfo.Id,
-	}
-	if err := waiter.Wait(ctx, waitInput, 5*time.Minute); err != nil {
-		if ctx.Err() != nil {
-			logger.Warn().Msg("shutting down, stopping INSYNC poll")
-		} else {
-			logger.Err(err).Msg("failed waiting for change to propagate")
-		}
-		return
-	}
-
-	// Fetch current value of record to confirm the change
-	updatedRecordValue, updatedRecordTTL, err := getCurrentRecordValue(ctx, svc)
-	if err != nil {
-		logger.Err(err).Msg("unable to get updated record value")
-		return
-	}
-
-	logger.Info().
-		Str("updatedRecordValue", updatedRecordValue).
-		Uint64("updatedRecordTTL", updatedRecordTTL).
-		Msg("change propagated")
+type appConfig struct {
+	dnsName      string
+	dnsTTL       int64
+	hostedZoneID string
+	checkIPURL   string
+	sleepPeriod  time.Duration
+	port         uint
+	console      bool
 }
 
-func getCurrentRecordValue(ctx context.Context, svc *route53.Client) (string, uint64, error) {
+type route53API interface {
+	ChangeResourceRecordSets(ctx context.Context, params *route53.ChangeResourceRecordSetsInput, optFns ...func(*route53.Options)) (*route53.ChangeResourceRecordSetsOutput, error)
+	ListResourceRecordSets(ctx context.Context, params *route53.ListResourceRecordSetsInput, optFns ...func(*route53.Options)) (*route53.ListResourceRecordSetsOutput, error)
+}
+
+type changeWaiter interface {
+	Wait(ctx context.Context, params *route53.GetChangeInput, maxWaitDur time.Duration, optFns ...func(*route53.ResourceRecordSetsChangedWaiterOptions)) error
+}
+
+type updater struct {
+	cfg        appConfig
+	log        zerolog.Logger
+	r53        route53API
+	waiter     changeWaiter
+	httpClient *http.Client
+}
+
+func parseConfig(args []string, getenv func(string) string) (appConfig, error) {
+	fs := flag.NewFlagSet("update-route53", flag.ContinueOnError)
+	console := fs.Bool("console", false, "enable console logging")
+	port := fs.Uint("port", 8080, "port for health check/metrics server")
+	if err := fs.Parse(args); err != nil {
+		return appConfig{}, err
+	}
+
+	cfg := appConfig{
+		console:     *console,
+		port:        *port,
+		checkIPURL:  "http://checkip.amazonaws.com/",
+		dnsTTL:      300,
+		sleepPeriod: 5 * time.Minute,
+	}
+
+	if cfg.port == 0 || cfg.port > 65535 {
+		return appConfig{}, fmt.Errorf("invalid port number: %d", cfg.port)
+	}
+
+	cfg.dnsName = getenv("DNS_NAME")
+	if cfg.dnsName == "" {
+		return appConfig{}, fmt.Errorf("missing DNS_NAME environment variable")
+	}
+
+	cfg.hostedZoneID = getenv("HOSTED_ZONE_ID")
+	if cfg.hostedZoneID == "" {
+		return appConfig{}, fmt.Errorf("missing HOSTED_ZONE_ID environment variable")
+	}
+
+	if v := getenv("DNS_TTL"); v != "" {
+		ttl, err := strconv.ParseInt(v, 10, 64)
+		if err != nil {
+			return appConfig{}, fmt.Errorf("invalid DNS_TTL: %w", err)
+		}
+		cfg.dnsTTL = ttl
+	}
+
+	if v := getenv("CHECK_IP"); v != "" {
+		if _, err := url.Parse(v); err != nil {
+			return appConfig{}, fmt.Errorf("invalid CHECK_IP: %w", err)
+		}
+		cfg.checkIPURL = v
+	}
+
+	if v := getenv("SLEEP_PERIOD"); v != "" {
+		d, err := time.ParseDuration(v)
+		if err != nil {
+			return appConfig{}, fmt.Errorf("invalid SLEEP_PERIOD: %w", err)
+		}
+		cfg.sleepPeriod = d
+	}
+
+	return cfg, nil
+}
+
+func (u *updater) currentRecord(ctx context.Context) (string, int64, error) {
 	input := &route53.ListResourceRecordSetsInput{
-		HostedZoneId: aws.String("/hostedzone/" + hostedZoneId),
+		HostedZoneId: aws.String("/hostedzone/" + u.cfg.hostedZoneID),
 	}
 	for {
-		output, err := svc.ListResourceRecordSets(ctx, input)
+		output, err := u.r53.ListResourceRecordSets(ctx, input)
 		if err != nil {
-			return "", 0, err
+			return "", 0, fmt.Errorf("listing record sets: %w", err)
 		}
-		for _, recordSet := range output.ResourceRecordSets {
-			if *recordSet.Name == (dnsName+".") && recordSet.Type == types.RRTypeA {
-				return *recordSet.ResourceRecords[0].Value, uint64(*recordSet.TTL), nil
+		for _, rs := range output.ResourceRecordSets {
+			if *rs.Name == u.cfg.dnsName+"." && rs.Type == types.RRTypeA {
+				return *rs.ResourceRecords[0].Value, *rs.TTL, nil
 			}
 		}
 		if !output.IsTruncated {
@@ -182,116 +149,160 @@ func getCurrentRecordValue(ctx context.Context, svc *route53.Client) (string, ui
 	return "", 0, nil
 }
 
-func main() {
-	var err error
+func (u *updater) update(ctx context.Context) error {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u.cfg.checkIPURL, nil)
+	if err != nil {
+		return fmt.Errorf("creating IP check request: %w", err)
+	}
+	resp, err := u.httpClient.Do(req)
+	if err != nil {
+		return fmt.Errorf("fetching current address: %w", err)
+	}
+	defer resp.Body.Close()
 
-	console := flag.Bool("console", false, "enable console logging")
-	port := flag.Uint("port", 8080, "port for health check/metrics server")
-	flag.Parse()
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return fmt.Errorf("reading response body: %w", err)
+	}
 
-	if *console {
+	rawIP := strings.TrimSpace(string(body))
+	if net.ParseIP(rawIP) == nil {
+		return fmt.Errorf("invalid IP address: %q", rawIP)
+	}
+
+	currentValue, currentTTL, err := u.currentRecord(ctx)
+	if err != nil {
+		return fmt.Errorf("getting current record: %w", err)
+	}
+
+	if currentValue == rawIP && currentTTL == u.cfg.dnsTTL {
+		u.log.Info().
+			Str("currentAddress", rawIP).
+			Str("currentRecordValue", currentValue).
+			Int64("currentRecordTTL", currentTTL).
+			Msg("address has not changed")
+		return nil
+	}
+
+	changeInput := &route53.ChangeResourceRecordSetsInput{
+		ChangeBatch: &types.ChangeBatch{
+			Changes: []types.Change{
+				{
+					Action: types.ChangeActionUpsert,
+					ResourceRecordSet: &types.ResourceRecordSet{
+						Name:            aws.String(u.cfg.dnsName),
+						Type:            types.RRTypeA,
+						TTL:             aws.Int64(u.cfg.dnsTTL),
+						ResourceRecords: []types.ResourceRecord{{Value: aws.String(rawIP)}},
+					},
+				},
+			},
+		},
+		HostedZoneId: aws.String("/hostedzone/" + u.cfg.hostedZoneID),
+	}
+	changeOutput, err := u.r53.ChangeResourceRecordSets(ctx, changeInput)
+	if err != nil {
+		return fmt.Errorf("changing record sets: %w", err)
+	}
+
+	updatesTotal.Inc()
+	changeID := *changeOutput.ChangeInfo.Id
+	u.log.Info().
+		Str("currentAddress", rawIP).
+		Str("change", changeID).
+		Msg("change submitted")
+
+	waitInput := &route53.GetChangeInput{Id: changeOutput.ChangeInfo.Id}
+	if err := u.waiter.Wait(ctx, waitInput, 5*time.Minute); err != nil {
+		if ctx.Err() != nil {
+			return fmt.Errorf("shutting down during INSYNC poll: %w", ctx.Err())
+		}
+		return fmt.Errorf("waiting for change to propagate: %w", err)
+	}
+
+	updatedValue, updatedTTL, err := u.currentRecord(ctx)
+	if err != nil {
+		return fmt.Errorf("confirming updated record: %w", err)
+	}
+
+	u.log.Info().
+		Str("currentAddress", rawIP).
+		Str("change", changeID).
+		Str("updatedRecordValue", updatedValue).
+		Int64("updatedRecordTTL", updatedTTL).
+		Msg("change propagated")
+
+	return nil
+}
+
+func run(ctx context.Context, args []string, getenv func(string) string) error {
+	cfg, err := parseConfig(args, getenv)
+	if err != nil {
+		return err
+	}
+
+	var logger zerolog.Logger
+	if cfg.console {
 		logger = zerolog.New(zerolog.ConsoleWriter{Out: os.Stdout}).With().Timestamp().Logger()
 	} else {
 		logger = zerolog.New(os.Stdout).With().Timestamp().Logger()
 	}
-
-	if *port < 1 || *port > 65535 {
-		logger.Fatal().Msg("invalid port number")
-	}
-
-	dnsName = os.Getenv("DNS_NAME")
-	if dnsName == "" {
-		logger.Fatal().Msg("missing DNS_NAME environment variable")
-	}
-
-	dnsTTLStr := os.Getenv("DNS_TTL")
-	if dnsTTLStr != "" {
-		dnsTTL, err = strconv.ParseUint(dnsTTLStr, 10, 32)
-		if err != nil {
-			logger.Fatal().Msg("invalid DNS_TTL environment variable")
-		}
-	}
-
-	hostedZoneId = os.Getenv("HOSTED_ZONE_ID")
-	if hostedZoneId == "" {
-		logger.Fatal().Msg("missing HOSTED_ZONE_ID environment variable")
-	}
-
-	tmpCheckIPURL := os.Getenv("CHECK_IP")
-	if tmpCheckIPURL != "" {
-		_, err := url.Parse(tmpCheckIPURL)
-		if err != nil {
-			logger.Fatal().Msg("invalid CHECK_IP environment variable")
-		}
-		checkIPURL = tmpCheckIPURL
-	}
-
-	sleepPeriodStr := os.Getenv("SLEEP_PERIOD")
-	if sleepPeriodStr != "" {
-		sleepPeriod, err = time.ParseDuration(sleepPeriodStr)
-		if err != nil {
-			logger.Fatal().Msg("invalid SLEEP_PERIOD environment variable")
-		}
-	}
-
 	logger = logger.With().
-		Str("dnsName", dnsName).
-		Str("hostedZoneId", hostedZoneId).
+		Str("dnsName", cfg.dnsName).
+		Str("hostedZoneID", cfg.hostedZoneID).
 		Logger()
 
-	// Log startup message
 	logger.Info().
-		Str("checkIPURL", checkIPURL).
-		Str("sleepPeriod", sleepPeriod.String()).
-		Uint64("dnsTTL", dnsTTL).
+		Str("checkIPURL", cfg.checkIPURL).
+		Str("sleepPeriod", cfg.sleepPeriod.String()).
+		Int64("dnsTTL", cfg.dnsTTL).
 		Msg("starting route53-updater...")
 
-	// Cancel context on SIGINT/SIGTERM
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-	defer stop()
-
-	// Load AWS configuration
 	cfgCtx, cfgCancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cfgCancel()
 
-	cfg, err := config.LoadDefaultConfig(cfgCtx)
+	awsCfg, err := awsconfig.LoadDefaultConfig(cfgCtx)
 	if err != nil {
-		logger.Fatal().Err(err).Msg("unable to load aws configuration")
+		return fmt.Errorf("loading AWS configuration: %w", err)
 	}
 
-	// Create Route53 client
-	svc := route53.NewFromConfig(cfg)
+	svc := route53.NewFromConfig(awsCfg)
 
-	// Start health check server
+	u := &updater{
+		cfg:        cfg,
+		log:        logger,
+		r53:        svc,
+		waiter:     route53.NewResourceRecordSetsChangedWaiter(svc),
+		httpClient: &http.Client{Timeout: 10 * time.Second},
+	}
+
 	mux := http.NewServeMux()
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusOK)
 		w.Header().Set("Content-Type", "text/plain")
 		fmt.Fprint(w, "200 OK")
 	})
 	mux.Handle("/metrics", promhttp.Handler())
 
 	server := &http.Server{
-		Addr:    fmt.Sprintf(":%d", *port),
+		Addr:    fmt.Sprintf(":%d", cfg.port),
 		Handler: mux,
 	}
 
-	go func() {
-		if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-			logger.Fatal().Err(err).Msg("server failed")
-		}
-	}()
-
-	go func() {
-		<-ctx.Done()
-		shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer shutdownCancel()
+	defer func() {
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
 		if err := server.Shutdown(shutdownCtx); err != nil {
 			logger.Err(err).Msg("server shutdown error")
 		}
 	}()
 
-	// Start the main loop
+	serverErr := make(chan error, 1)
+	go func() {
+		if err := server.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			serverErr <- err
+		}
+	}()
+
 	sleepTimer := time.NewTimer(0)
 	defer sleepTimer.Stop()
 
@@ -299,20 +310,27 @@ func main() {
 		select {
 		case <-ctx.Done():
 			logger.Info().Msg("shutting down")
-			return
+			return nil
+		case err := <-serverErr:
+			return fmt.Errorf("server failed: %w", err)
 		case <-sleepTimer.C:
 		}
 
-		// Start the duration timer
 		start := time.Now()
+		if err := u.update(ctx); err != nil {
+			logger.Err(err).Msg("update failed")
+		}
+		updateDuration.Add(time.Since(start).Seconds())
 
-		// Update Route53
-		updateRoute53(ctx, svc)
+		sleepTimer.Reset(cfg.sleepPeriod)
+	}
+}
 
-		// Record the duration
-		updateDuration.Add(float64(time.Since(start).Seconds()))
-
-		// Wait before checking again
-		sleepTimer.Reset(sleepPeriod)
+func main() {
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+	if err := run(ctx, os.Args[1:], os.Getenv); err != nil {
+		fmt.Fprintf(os.Stderr, "error: %s\n", err)
+		os.Exit(1)
 	}
 }
