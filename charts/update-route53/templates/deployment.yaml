@@ -62,6 +62,9 @@ spec:
             {{- if .Values.secret.existingSecret }}
             - secretRef:
                 name: {{ tpl .Values.secret.existingSecret . }}
+            {{- else if .Values.secret.create }}
+            - secretRef:
+                name: {{ include "update-route53.fullname" . }}
             {{- end }}
           {{- with .Values.extraEnvFrom }}
             {{- toYaml . | nindent 12 }}
