@@ -1,2 +1,3 @@
 /update-route53
 env.sh
+.claude/settings.local.json
