@@ -51,6 +51,25 @@ service:
     # prometheus.io/path: /metrics
     # prometheus.io/port: "8080"
 
+serviceMonitor:
+  enabled: false
+  # Additional labels for the ServiceMonitor
+  labels: {}
+  # Annotations for the ServiceMonitor
+  annotations: {}
+  # Scrape interval (e.g. "30s")
+  interval: ""
+  # Scrape timeout (e.g. "10s")
+  scrapeTimeout: ""
+  # Metrics path
+  path: /metrics
+  # Metric relabelings
+  metricRelabelings: []
+  # Relabelings
+  relabelings: []
+  # Namespace selector
+  namespaceSelector: {}
+
 serviceAccount:
   create: false
   name: ""
