@@ -21,15 +21,12 @@ docker run -d \
 
 ### Kubernetes Helm Chart
 
-Add the chart repo:
-```shell
-helm repo add update-route53 https://jpflouret.github.io/update-route53/
-helm repo update
-```
+The chart is published as an OCI artifact to
+`oci://ghcr.io/jpflouret/charts/update-route53`.
 
 Create `my-values.yaml` configuration file with default values:
 ```shell
-helm show values update-route53/update-route53 > my-values.yaml
+helm show values oci://ghcr.io/jpflouret/charts/update-route53 > my-values.yaml
 ```
 
 Edit the `my-values.yaml` file and set the values as required:
@@ -78,7 +75,7 @@ the secret created above (`aws-credentials` in this example):
 ```shell
 helm install \
   my-update-route53 \
-  update-route53/update-route53 \
+  oci://ghcr.io/jpflouret/charts/update-route53 \
   --namespace <namespace> \
   --values my-values.yaml \
   --set=secret.existingSecret=aws-credentials

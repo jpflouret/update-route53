@@ -51,7 +51,7 @@ The Helm chart is at `charts/update-route53/`. Key templating notes:
 - `checkIPURL` is the canonical values key for the check-IP URL. The old misspelling `chechIPURL` is deprecated but still supported as a fallback (see `configmap.yaml` and `NOTES.txt` deprecation warning). Remove `chechIPURL` in a future major release.
 - AWS credentials can be supplied either through an existing secret (`secret.existingSecret`) or by letting the chart create one (`secret.create: true`). Alternatively, a Kubernetes service account with IRSA/Pod Identity can be used.
 - Chart version and app version are in `Chart.yaml` and must be bumped manually on changes.
-- The Helm release CI workflow (`helm-release.yml`) uses `chart-releaser` and publishes to `https://jpflouret.github.io/update-route53/`.
+- The Helm release CI workflow (`helm-release.yml`) packages the chart and pushes it as an OCI artifact to `oci://ghcr.io/jpflouret/charts/update-route53`.
 
 ## Commit Guidelines
 
@@ -63,4 +63,4 @@ The Helm chart is at `charts/update-route53/`. Key templating notes:
 
 Two GitHub Actions workflows:
 - **`docker-image.yml`** — Builds and pushes multi-platform (`linux/amd64`, `linux/arm64`) images to Docker Hub (`jpflouret/update-route53`) and GHCR on pushes to `main` and semver tags.
-- **`helm-release.yml`** — Runs `chart-releaser` on pushes to `main` to publish updated Helm chart releases.
+- **`helm-release.yml`** — Pushes the Helm chart to `oci://ghcr.io/jpflouret/charts` on pushes to `main`, skipping versions that are already published.

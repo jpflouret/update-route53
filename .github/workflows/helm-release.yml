@@ -8,26 +8,34 @@ on:
 jobs:
   release:
     permissions:
-      contents: write
+      contents: read
+      packages: write
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
         uses: actions/checkout@v6
-        with:
-          fetch-depth: 0
-
-      - name: Configure Git
-        run: |
-          git config user.name "$GITHUB_ACTOR"
-          git config user.email "$GITHUB_ACTOR@users.noreply.github.com"
 
       - name: Install Helm
         uses: azure/setup-helm@v5
 
-      - name: Run chart-releaser
-        uses: helm/chart-releaser-action@v1.7.0
-        with:
-          charts_dir: charts
-          skip_existing: true
+      - name: Login to GHCR
         env:
-          CR_TOKEN: "${{ secrets.GITHUB_TOKEN }}"
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          echo "$GITHUB_TOKEN" | helm registry login ghcr.io \
+            --username "$GITHUB_ACTOR" --password-stdin
+
+      - name: Package and push charts
+        env:
+          OCI_REPO: oci://ghcr.io/${{ github.repository_owner }}/charts
+        run: |
+          for chart in charts/*/; do
+            name=$(yq .name "$chart/Chart.yaml")
+            version=$(yq .version "$chart/Chart.yaml")
+            if helm show chart "$OCI_REPO/$name" --version "$version" > /dev/null 2>&1; then
+              echo "Chart $name version $version already published, skipping"
+              continue
+            fi
+            helm package "$chart"
+            helm push "$name-$version.tgz" "$OCI_REPO"
+          done
